@@ -33,7 +33,7 @@ def send_email(recipient, subject, body):
         print(e)
         print("Failed to send mail")
 
-emaillist=[""]
+
 
 class Uniswap():
     def __init__(self, w3):
@@ -105,7 +105,8 @@ class Worker():
         self.w3 = external['web3']
         self.external = external
         self.coin_obj_list = coin_list
-        #self.make_coin_objects()
+        self.notify = True
+        self.emaillist = ['']
 
     def check_large_tx(self, block):
         print('{} -- {} Txs'.format(block.number, len(block.transactions)))
@@ -117,21 +118,28 @@ class Worker():
                         print('--------------')
                         print(coin.name)
                         print(inputs)
+                        volume = 0
                         if '_value' in inputs[1].keys():
-                            print(inputs[1]['_value']/coin.supply*100)
-                            if inputs[1]['_value'] > coin.liquidity:
-                                print('LARGE TX')
-                        if '_amount' in inputs[1].keys():
-                            print(inputs[1]['_amount']/coin.supply*100)
-                            if inputs[1]['_value'] > coin.liquidity:
-                                print('LARGE TX')
+                            volume = inputs[1]['_value']
+                        elif '_amount' in inputs[1].keys():
+                            volume = inputs[1]['_amount']
+
+                        if volume> coin.liquidity:
+                            fraction = volume/coin.liquidity
+                            if volume > coin.liquidity:
+                                print('Large tx')
+                                print(coin.name, fraction)
+                                if self.notify:
+                                    self.send_notification(tx, coin, fraction)
 
     def send_notification(self, tx, coin, fraction):
-        if self.notify:
-            send_email(recipient, subject, body)
+
+            body = self.body(tx, coin, fraction)
+            send_email(self.email_list, subject, body)
 
     def make_body(self, tx, coin, fraction):
-        body = 'A large {} transaction was sent of '.format(coin, tx.hash)
+        body = '{} percent of the total supply of {} was sent on chain. \n\n Tx hash: {}'.format(fraction*100, coin, tx.hash)
+        return body
 
     def run_continuously(self, from_block = None):
         if from_block:
