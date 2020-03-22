@@ -6,10 +6,18 @@ import dill
 import os
 import smtplib
 import ssl
+from twilio.rest import TwilioRestClient
 
+
+
+def send_text(body):
+    with open('../creds/twilio_creds.json') as f:
+        creds = json.load(f)
+    client = TwilioRestClient(creds['account_sid'], creds['auth_token'])
+    client.messages.create(to="+18192308597", from_=creds['phone_from'], body=body)
 
 def send_email(recipient, subject, body):
-    with open('email_creds.json') as f:
+    with open('../creds/smtp_creds.json') as f:
         creds = json.load(f)
     gmail_user, gmail_pwd = creds['email'], creds['password']
 
@@ -33,7 +41,15 @@ def send_email(recipient, subject, body):
         print(e)
         print("Failed to send mail")
 
-
+class User():
+    def __init__(self, email = '', phone = ''):
+        self.notify = True
+        self.tracked_coins = 'all'
+        self.tracked_from_addresses = 'all'
+        self.tracked_to_addresses = 'all'
+        self.email = email
+        self.phone = phone
+        self.notify = True if self.email or self.phone
 
 class Uniswap():
     def __init__(self, w3):
@@ -101,12 +117,12 @@ class Coin():
         return volume
 
 class Worker():
-    def __init__(self, external, coin_obj_list):
+    def __init__(self, external, coin_obj_list, users):
         self.w3 = external['web3']
         self.external = external
         self.coin_obj_list = coin_list
         self.notify = True
-        self.emaillist = ['']
+        self.users = users
 
     def check_large_tx(self, block):
         print('{} -- {} Txs'.format(block.number, len(block.transactions)))
@@ -118,7 +134,7 @@ class Worker():
                         print('--------------')
                         print(coin.name)
                         print(inputs)
-                        volume = 0
+                        volume = 0 # inputs[1].get('_value',inputs[1].get('_amount',0))
                         if '_value' in inputs[1].keys():
                             volume = inputs[1]['_value']
                         elif '_amount' in inputs[1].keys():
@@ -129,13 +145,17 @@ class Worker():
                             if volume > coin.liquidity:
                                 print('Large tx')
                                 print(coin.name, fraction)
-                                if self.notify:
-                                    self.send_notification(tx, coin, fraction)
+                                for user in users:
+                                    if user.notify:
+                                        self.send_notifications(tx, users, coin, fraction)
 
-    def send_notification(self, tx, coin, fraction):
-
+    def send_notifications(self, tx, coin, fraction):
             body = self.body(tx, coin, fraction)
-            send_email(self.email_list, subject, body)
+            for user in users:
+                if user.email:
+                    send_email(user.email, subject, body)
+                if user.phone:
+                    send_text(user.email, subject, body)
 
     def make_body(self, tx, coin, fraction):
         body = '{} percent of the total supply of {} was sent on chain. \n\n Tx hash: {}'.format(fraction*100, coin, tx.hash)
