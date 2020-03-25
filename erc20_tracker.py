@@ -2,44 +2,8 @@ from web3 import Web3, HTTPProvider
 import json
 import requests
 import time
-import dill
 import os
-import smtplib
-import ssl
-from twilio.rest import TwilioRestClient
-
-
-
-def send_text(body):
-    with open('../creds/twilio_creds.json') as f:
-        creds = json.load(f)
-    client = TwilioRestClient(creds['account_sid'], creds['auth_token'])
-    client.messages.create(to="+18192308597", from_=creds['phone_from'], body=body)
-
-def send_email(recipient, subject, body):
-    with open('../creds/smtp_creds.json') as f:
-        creds = json.load(f)
-    gmail_user, gmail_pwd = creds['email'], creds['password']
-
-    FROM = gmail_user
-    TO = recipient if type(recipient) is list else [recipient]
-    SUBJECT = subject
-    TEXT = body
-
-    # Prepare message
-    message = """From: %s\nTo: %s\nSubject: %s\n\n%s
-    """ % (FROM, ", ".join(TO), SUBJECT, TEXT)
-    try:
-        server = smtplib.SMTP("smtp.gmail.com", 587)
-        server.ehlo()
-        server.starttls()
-        server.login(gmail_user, gmail_pwd)
-        server.sendmail(FROM, TO, message)
-        server.close()
-        print('Successfully sent the mail')
-    except Exception as e:
-        print(e)
-        print("Failed to send mail")
+from tools import send_email, send_text, load_json, get_abi
 
 class User():
     def __init__(self, email = '', phone = ''):
@@ -64,23 +28,15 @@ class Uniswap():
         with open('uniswap_factory.json') as f:
             abi['factory'] = json.load(f)
         return abi
-# class DEXes():
-#     __init__(self):
-#
-
-#dexes = {'uni': Uniswap()}
 
 class Coin():
-    def __init__(self, name, address, external, abi = None):
+    def __init__(self, name, address, abi, external):
         print('Initializing {}'.format(name))
         self.name = name
         self.address = address
         self.w3 = external['web3']
         self.uni = external['uni']
-        if abi:
-            self.abi = abi
-        else:
-            self.abi = self.get_abi()
+        self.abi = abi
 
         if self.abi:
             self.contract = self.w3.eth.contract(address=self.address, abi=self.abi)
@@ -88,14 +44,6 @@ class Coin():
             self.decimals = self.contract.functions.decimals().call()
             self.liquidity = self.get_liquidity()
 
-    def get_abi(self):
-        resp = requests.get('https://api.etherscan.io/api?module=contract&action=getabi&address='+self.address).json()
-        if resp['status'] == '1':
-            return resp['result']
-        else:
-            print('Error while loading abi for {}'.format(self.name))
-            print(resp['message'])
-            return []
 
     def get_liquidity(self):
         liquidity = self.get_uniswap_liquidity(0.1)
@@ -106,8 +54,6 @@ class Coin():
         token_reserve = self.contract.functions.balanceOf(exchange_address).call()
         #eth_reserve = self.w3.eth.getBalance(exchange_address)
 
-
-        #
         # sell_token_no_slippage = volume * eth_reserve/token_reserve
         # sell_token_slippage = volume * eth_reserve/(token_reserve + sell_amount)
         #
@@ -117,16 +63,16 @@ class Coin():
         return volume
 
 class Worker():
-    def __init__(self, external, coin_obj_list, users):
+    def __init__(self, external, coins, users):
         self.w3 = external['web3']
         self.external = external
-        self.coin_obj_list = coin_list
+        self.coins = coin_list
         self.notify = True
         self.users = users
 
     def check_large_tx(self, block):
         print('{} -- {} Txs'.format(block.number, len(block.transactions)))
-        for coin in self.coin_obj_list:
+        for coin in self.coins:
             for tx in block.transactions:
                 if tx.to == coin.address:
                     inputs = coin.contract.decode_function_input(tx.input)
@@ -145,9 +91,9 @@ class Worker():
                             if volume > coin.liquidity:
                                 print('Large tx')
                                 print(coin.name, fraction)
-                                for user in users:
+                                for user in self.users:
                                     if user.notify:
-                                        self.send_notifications(tx, users, coin, fraction)
+                                        self.send_notifications(tx, user, coin, fraction)
 
     def send_notifications(self, tx, coin, fraction):
             body = self.body(tx, coin, fraction)
@@ -181,42 +127,33 @@ class Worker():
             print('LAST BLOCK NUM -- {}'.format(previous_block_num))
 
 
-def make_coin_objects():
-    fname = 'coin_obj.dill'
-    coin_addresses = load_coin_addresses()
-    # if os.path.isfile(fname):
-    #     with open(fname, 'rb') as f:
-    #         self.coin_obj_list = dill.load(f)
-    coin_obj_list = []
-    for name, address in coin_addresses.items():
-        if name not in (c.name for c in coin_obj_list):
-            coin_obj_list.append(Coin(name, address, external))
-            time.sleep(4)
-    return coin_obj_list
-    # with open(fname, 'wb') as f:
-    #     dill.dump(self.coin_obj_list, f)
+def make_coin_objects(external):
+    coin_info = load_json('coin_info.json')
+    coins = []
+    for coin in coin_info.keys():
+        #Fetch the abi if key isn't prevent in file
+        #Allows for adding coins without looking for abi
+        coin_info[coin]['abi'] = coin_info[coin].get('abi', get_abi(coin['address']))
+        coins.append(Coin(info['address'], coin_info[coin]['abi'], external))
+
+    with open('coin_info.json',w) as f:
+        json.dump(coin_info, f)
+
+    return coins
 
 
-def load_coin_addresses():
-    fname = 'coin_addresses.json'
-    if os.path.isfile(fname):
-        with open(fname) as f:
-            addresses = json.load(f)
-        return addresses
-    else:
-        return {}
 
 
 
 # PROVIDER = "wss://mainnet.infura.io/ws/v3/314056fe262245dc8b549c48778b176b"
-# w3 = Web3(Web3.WebsocketProvider(PROVIDER))
+# w3 = Web3(Web3.WebsocketProvider(PROVIDER, websocket_kwargs = {websocket_timeout = 50}))
 
-w3 = Web3(HTTPProvider("https://mainnet.infura.io/v3/314056fe262245dc8b549c48778b176b"))
+# w3 = Web3(HTTPProvider("https://mainnet.infura.io/v3/314056fe262245dc8b549c48778b176b"))
 uni = Uniswap(w3)
 external = {'uni':uni, 'web3': w3}
 
 
 
 
-coin_list = make_coin_objects()
-work = Worker(external, coin_list)
+coin_list = make_coin_objects(external)
+#work = Worker(external, coin_list)
